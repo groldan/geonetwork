@@ -53,7 +53,7 @@ public class ScheduledAccountsSynchronizationService implements InitializingBean
         DISABLED, SCHEDULED, RUNNING;
     }
 
-    private Status status = Status.DISABLED;
+    private volatile Status status = Status.DISABLED;
 
     public Status getStatus() {
         return status;
@@ -96,7 +96,14 @@ public class ScheduledAccountsSynchronizationService implements InitializingBean
         this.status = Status.SCHEDULED;
     }
 
-    public void synchronize() {
+    public boolean tryScheduleImmediately() {
+        if (getConfig().isEnabled()) {
+            scheduleNextSync(0, TimeUnit.MILLISECONDS);
+        }
+        return false;
+    }
+
+    void synchronize() {
         ScheduledSynchronizationProperties config = getConfig();
         if (!config.isEnabled()) {
             this.status = Status.DISABLED;
@@ -104,22 +111,29 @@ public class ScheduledAccountsSynchronizationService implements InitializingBean
             return;
         }
         this.status = Status.RUNNING;
-        log.debug("Synchronizing users and groups...");
         try {
-            this.reconcilingService.synchronize();
-
-            log.debug("Synchronization succeeded, scheduling next synchronization in {} {}.",
-                    config.getDelayBetweenRuns(), config.getTimeUnit());
-
-            this.scheduleNextSync(config.getDelayBetweenRuns(), config.getTimeUnit());
+            final boolean scheduleNextSync = true;
+            this.doSynchronize(scheduleNextSync);
         } catch (RuntimeException e) {
             if (config.isRetryOnFailure()) {
-                log.warn("Synchronization failed, retrying in {} {}.", config.getRetryDelay(), config.getTimeUnit(), e);
-                this.scheduleNextSync(config.getRetryDelay(), config.getTimeUnit());
+                final int retryDelay = config.getRetryDelay();
+                final TimeUnit timeUnit = config.getTimeUnit();
+                log.warn("Synchronization failed, retrying in {} {}.", retryDelay, timeUnit, e);
+                this.scheduleNextSync(retryDelay, timeUnit);
             } else {
                 log.warn("Synchronization failed, not retrying execution", e);
             }
         }
     }
 
+    void doSynchronize(boolean scheduleNextSync) {
+        log.debug("Synchronizing users and groups...");
+        this.reconcilingService.synchronize();
+
+        ScheduledSynchronizationProperties config = getConfig();
+        int delay = config.getDelayBetweenRuns();
+        TimeUnit timeUnit = config.getTimeUnit();
+        log.debug("Synchronization succeeded, scheduling next synchronization in {} {}.", delay, timeUnit);
+        this.scheduleNextSync(delay, timeUnit);
+    }
 }
